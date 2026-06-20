@@ -1,0 +1,262 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  Plantilla para desplegar una pila LAMP en EC2. La máquina EC2 incluye un servidor Apache y el lenguaje PHP.
+  Connexió a RDS-mysql
+Parameters:
+  DBName:
+    Default: MyDatabase
+    Description: MySQL database name
+    Type: String
+    MinLength: "1"
+    MaxLength: "64"
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
+    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
+  DBUser:
+    NoEcho: "true"
+    Description: Username for MySQL database access
+    Type: String
+    MinLength: "1"
+    MaxLength: "16"
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
+    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
+  DBPassword:
+    NoEcho: "true"
+    Description: Password for MySQL database access
+    Type: String
+    MinLength: "1"
+    MaxLength: "41"
+    AllowedPattern: "[a-zA-Z0-9]*"
+    ConstraintDescription: must contain only alphanumeric characters.
+  DBRootPassword:
+    NoEcho: "true"
+    Description: Root password for MySQL
+    Type: String
+    MinLength: "1"
+    MaxLength: "41"
+    AllowedPattern: "[a-zA-Z0-9]*"
+    ConstraintDescription: must contain only alphanumeric characters.
+  InstanceType:
+    Description: WebServer EC2 instance type
+    Type: String
+    Default: t2.small
+    AllowedValues:
+      - t2.nano
+      - t2.micro
+      - t2.small
+    ConstraintDescription: must be a valid EC2 instance type.
+  SSHLocation:
+    Description: " The IP address range that can be used to SSH to the EC2 instances"
+    Type: String
+    MinLength: "9"
+    MaxLength: "18"
+    Default: 0.0.0.0/0
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+Resources:
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow MySQL access from EC2
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !GetAtt WebServerSecurityGroup.GroupId
+  MyRDSInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    Properties:
+      Engine: mysql
+      EngineVersion: "8.0"
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: 20
+      StorageType: gp2
+      DBName: !Ref DBName
+      MasterUsername: !Ref DBUser
+      MasterUserPassword: !Ref DBPassword
+      PubliclyAccessible: false
+      VPCSecurityGroups:
+        - !GetAtt RDSSecurityGroup.GroupId
+      BackupRetentionPeriod: 7
+      DeletionProtection: false
+  WebServerInstance:
+    Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          InstallAndRun:
+            - Install
+            - Configure
+        Install:
+          files:
+            /var/www/html/dbconfig.php:
+              content: !Sub |
+                   <?php
+                    define('DB_HOST', '${MyRDSInstance.Endpoint.Address}');
+                    define('DB_PORT', '${MyRDSInstance.Endpoint.Port}');
+                    define('DB_NAME', '${DBName}');
+                    define('DB_USER', '${DBUser}');
+                    define('DB_PASSWORD', '${DBPassword}');
+                    ?>
+              mode: "000644"
+              owner: apache
+              group: apache
+            /var/www/html/index.php:
+              content: !Sub |
+                <html>
+                  <head>
+                    <title>AWS CloudFormation LAMP + RDS</title>
+                    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+                  </head>
+                  <body>
+                    <h1>Welcome to the AWS CloudFormation LAMP Stack with RDS</h1>
+                    <p/>
+                    <?php
+                      // Print current date and time
+                      print "The Current Date and Time is <br/>";
+                      print date("g:i A l, F j Y.");
+                    ?>
+                    <p/>
+                    <p/>
+                    <h2>RDS Database Connection</h2>
+                    <?php
+                      $endpoint = DB_HOST";
+                      $port = DB_PORT";
+                      $dbname   = "${DBName}";
+                      $username = "${DBUser}";
+                      $password = "${DBPassword}";
+                      
+                       print "RDS Endpoint: " . $endpoint . ":" . $port . "<br />";
+                      print "Database: " . $dbname . "<br />";
+                      
+                      // Connect using mysqli
+                      $conn = new mysqli($endpoint, $username, $password, $dbname, $port);
+                      
+                      if ($conn->connect_error) {
+                        die("Connection failed: " . $conn->connect_error);
+                      }
+                      print "<strong style='color:green;'>Connected to RDS MySQL successfully!</strong><br />";
+                      
+                      // Show MySQL version
+                      $result = $conn->query("SELECT VERSION() as version");
+                      if ($row = $result->fetch_assoc()) {
+                        print "MySQL Version " . $row['version'] . "<br />";
+                      }
+                      
+                      $conn->close();
+                    ?>
+                    <p/>
+                    <h2>PHP Information</h2>
+                    <?php phpinfo(); ?>
+                  </body>
+                </html>
+              mode: "000600"
+              owner: apache
+              group: apache
+            /etc/cfn/cfn-hup.conf:
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                interval=1
+              mode: "000400"
+              owner: root
+              group: root
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update,post.add
+                path=Resources.WebServerInstance.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource WebServerInstance --configsets InstallAndRun --region ${AWS::Region}
+                runas=root
+              mode: "000400"
+              owner: root
+              group: root
+          services:
+            sysvinit:
+              httpd:
+                enabled: "true"
+                ensureRunning: "true"
+              # Habilitación del servicio cfh-hup, que escucha cambios en el Metadata
+              cfn-hup:
+                enabled: "true"
+                ensureRunning: "true"
+                files:
+                  - /etc/cfn/cfn-hup.conf
+                  - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+        Configure:
+          commands:
+            01_test_rds_connection:
+              command: !Sub |
+                mysql -h ${MyRDSInstance.Endpoint.Address} -P ${MyRDSInstance.Endpoint.Port} -u ${DBUser} -p'${DBPassword}' -e "SELECT 1" ${DBName}
+              test: "! test -f /var/log/rds-connection-verified"
+
+            02_mark_connection_verified:
+              command: "touch /var/log/rds-connection-verified"
+    Properties:
+      IamInstanceProfile: !Ref MyInstanceProfile
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      InstanceType: !Ref InstanceType
+      SecurityGroups:
+        - !Ref WebServerSecurityGroup
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash
+          dnf update -y
+          dnf install -y php php-cli php-common php-mysqlnd php-curl
+          dnf install -y python3 python3-pip
+          systemctl enable httpd
+          systemctl start httpd
+          pip3 install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
+          
+          # Run cfn-init to apply metadata configuration
+          /opt/aws/bin/cfn-init -v \
+            --stack ${AWS::StackName} \
+            --resource WebServerInstance \
+            --configsets InstallAndRun \
+            --region ${AWS::Region}
+          RESULT=$?
+          # Signal CloudFormation with the result
+          /opt/aws/bin/cfn-signal -e $? \
+            --stack ${AWS::StackName} \
+            --resource WebServerInstance \
+            --region ${AWS::Region}
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT5M
+  MyInstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: "/"
+      Roles:
+        - "LabRole"
+  WebServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP access via port 80
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: "80"
+          ToPort: "80"
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: "22"
+          ToPort: "22"
+          CidrIp: !Ref SSHLocation
+Outputs:
+  WebsiteURL:
+    Description: URL for newly created LAMP stack
+    Value: !Join
+      - ""
+      - - "http://"
+        - !GetAtt
+          - WebServerInstance
+          - PublicDnsName
+
+  RDSEndpoint:
+    Description: Endpoint de la base de dades RDS
+    Value: !GetAtt MyRDSInstance.Endpoint.Address
+
+  RDSPort:
+    Description: Port de connexió RDS
+    Value: !GetAtt MyRDSInstance.Endpoint.Port

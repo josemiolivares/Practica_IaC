@@ -1,0 +1,61 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Plantilla base que lanza un conjunto de stacks anidados
+Parameters:
+  WebServiceName:
+    Type: String
+    Description: Nombre del servicio
+    Default: MyECSService
+Resources:
+  MyNetworkStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: 
+        https://s3.us-east-1.amazonaws.com/aws-s3-poal-josemi-2341234/77799affeeb7bb08f1fdf7ea760cc2c4.template
+  MyClusterStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: 
+        https://s3.us-east-1.amazonaws.com/aws-s3-poal-josemi-2341234/27169527f7508dd2cfa3fd6b8a816bcf.template
+      Parameters:
+        VpcId:
+          Fn::GetAtt:
+          - MyNetworkStack
+          - Outputs.VPCId
+        SubnetIds:
+          Fn::Sub: 
+            ${MyNetworkStack.Outputs.PrivateSubnet1},${MyNetworkStack.Outputs.PrivateSubnet2}
+    DependsOn: MyNetworkStack
+  MyServiceStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: 
+        https://s3.us-east-1.amazonaws.com/aws-s3-poal-josemi-2341234/1fc1bc67a264456e5a37278fe12731c6.template
+      Parameters:
+        VpcId:
+          Fn::GetAtt:
+          - MyNetworkStack
+          - Outputs.VPCId
+        PublicSubnetIds:
+          Fn::Sub: 
+            ${MyNetworkStack.Outputs.PublicSubnet1},${MyNetworkStack.Outputs.PublicSubnet2}
+        PrivateSubnetIds:
+          Fn::Sub: 
+            ${MyNetworkStack.Outputs.PrivateSubnet1},${MyNetworkStack.Outputs.PrivateSubnet2}
+        ClusterName:
+          Fn::GetAtt:
+          - MyClusterStack
+          - Outputs.ClusterName
+        CapacityProvider:
+          Fn::GetAtt:
+          - MyClusterStack
+          - Outputs.CapacityProvider
+        ServiceName:
+          Ref: WebServiceName
+    DependsOn: MyClusterStack
+Outputs:
+  ELBUrl:
+    Description: DNS del balanceador de carga
+    Value:
+      Fn::GetAtt:
+      - MyServiceStack
+      - Outputs.ELBUrl
